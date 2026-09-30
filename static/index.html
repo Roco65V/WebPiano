@@ -82,12 +82,68 @@
         </button>
         <span id="midi-name" class="midi-name" hidden></span>
       </div>
+
+      <div class="midi-device">
+        <button type="button" id="midi-link-btn" class="midi-btn" title="连接 MIDI 设备（电钢琴 / MIDI 键盘）">
+          <svg class="midi-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM4 7h16v3H4V7zm2.5 8.5a1 1 0 0 1-1-1V10a1 1 0 0 1 2 0v4.5a1 1 0 0 1-1 1zm3.5 0a1 1 0 0 1-1-1V10a1 1 0 0 1 2 0v4.5a1 1 0 0 1-1 1zm3.5 0a1 1 0 0 1-1-1V10a1 1 0 0 1 2 0v4.5a1 1 0 0 1-1 1zm3.5 0a1 1 0 0 1-1-1V10a1 1 0 0 1 2 0v4.5a1 1 0 0 1-1 1z" />
+          </svg>
+          <span class="midi-btn-label" id="midi-link-label">MIDI 设备</span>
+        </button>
+        <div class="midi-device-panel" id="midi-device-panel" hidden>
+          <div class="midi-device-status" id="midi-device-status">未连接</div>
+
+          <div class="midi-device-row">
+            <span>输入设备</span>
+            <select id="midi-input-select"><option value="all">全部输入</option></select>
+            <label class="toggle" title="设备弹奏 → 网页发声">
+              <input type="checkbox" id="toggle-midi-in" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div class="midi-device-row">
+            <span>输出设备</span>
+            <select id="midi-output-select"><option value="">不发送</option></select>
+            <label class="toggle" title="网页 → 设备发声">
+              <input type="checkbox" id="toggle-midi-out" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+
+          <label class="midi-device-row" title="网页 → 设备发送音符时使用的力度">
+            <span>输出力度</span>
+            <input type="range" id="midi-velocity" min="1" max="127" value="100" />
+            <span class="midi-device-value" id="midi-velocity-value">100</span>
+          </label>
+          <label class="midi-device-row" title="网页 → 设备发送音符使用的 MIDI 通道（1-16）">
+            <span>输出通道</span>
+            <select id="midi-channel"></select>
+          </label>
+          <div class="midi-device-row" title="延音踏板 CC64（右踏板）：按住右 Shift 键或按钮">
+            <span>延音踏板</span>
+            <button type="button" class="midi-pedal" data-pedal="sustain">按住 <kbd>RAlt</kbd></button>
+            <span class="midi-device-value" data-pedal-state="sustain">—</span>
+          </div>
+          <div class="midi-device-row" title="弱音踏板 CC67（左踏板 / una corda）：按住 . 键或按钮">
+            <span>弱音踏板</span>
+            <button type="button" class="midi-pedal" data-pedal="soft">按住 <kbd>.</kbd></button>
+            <span class="midi-device-value" data-pedal-state="soft">—</span>
+          </div>
+          <div class="midi-device-row" title="保持音踏板 CC66（中踏板 / sostenuto）：按住 / 键或按钮">
+            <span>保持音踏板</span>
+            <button type="button" class="midi-pedal" data-pedal="sostenuto">按住 <kbd>/</kbd></button>
+            <span class="midi-device-value" data-pedal-state="sostenuto">—</span>
+          </div>
+
+          <div class="midi-device-hint">
+            输入输出相同设备时，请勿同时打开开关造成回环。
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
   <main class="stage">
-
-
     <div class="piano" id="piano">
       <div class="piano-band">
         <div class="brand-strip" >
