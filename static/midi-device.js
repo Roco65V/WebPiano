@@ -30,6 +30,7 @@ export const midiDevice = {
     onSoft: null,
     onAllNotesOff: null,
     onProgramChange: null,
+    onControlChange: null,
     onPortsChange: null,
 
     _echo: new Map(), 
@@ -109,6 +110,7 @@ export const midiDevice = {
             } else if (d1 === CC_ALL_NOTES_OFF || d1 === CC_ALL_SOUND_OFF) {
                 if (this.onAllNotesOff) this.onAllNotesOff();
             }
+            if (this.onControlChange) this.onControlChange(d1, d2, channel);
         } else if (type === MIDI_PROGRAM_CHANGE) {
             if (this.onProgramChange) this.onProgramChange(d1, channel);
         }

@@ -1584,14 +1584,19 @@ function applyPedalsToNotes(notes, pedalEvents) {
 
 function updateVoiceConsole() {
   if (!midiVoiceConsole) return;
-  if (!midi.channelPrograms || midi.channelPrograms.size === 0) {
+  const programs = new Map();
+  if (midi.channelPrograms) {
+    for (const [ch, p] of midi.channelPrograms) programs.set(ch, p);
+  }
+  for (const [ch, p] of midiInState.programByChannel) programs.set(ch, p);
+  if (programs.size === 0) {
     midiVoiceConsole.hidden = true;
     midiVoiceRows.clear();
     return;
   }
   midiVoiceConsole.hidden = false;
   midiVoiceRows.clear();
-  const channels = [...midi.channelPrograms.keys()].sort((a, b) => a - b);
+  const channels = [...programs.keys()].sort((a, b) => a - b);
   const rows = [];
   const VC_COLORS = [
     "#4f8cff", "#22b8a6", "#3ddc84", "#a3d33b",
@@ -1600,7 +1605,7 @@ function updateVoiceConsole() {
     "#7bd13b", "#ffd24d", "#ff7a59", "#e06bd6"
   ];
   for (const ch of channels) {
-    const p = midi.channelPrograms.get(ch);
+    const p = programs.get(ch);
     const inst = (PROGRAM_TO_SOUNDFONT[p]) || "acoustic_grand_piano";
     const cn = INSTRUMENT_CN[inst] || inst;
     const color = VC_COLORS[ch % VC_COLORS.length];
@@ -1613,7 +1618,14 @@ function updateVoiceConsole() {
   }
   midiVoiceConsole.innerHTML = rows.join("");
   midiVoiceConsole.querySelectorAll(".vc-row").forEach((el) => {
-    midiVoiceRows.set(Number(el.dataset.ch), el);
+    const ch = Number(el.dataset.ch);
+    midiVoiceRows.set(ch, el);
+    const st = midiInState.ccByChannel.get(ch);
+    if (st) {
+      const level = (st.cc7 ?? 1) * (st.cc11 ?? 1);
+      const fill = el.querySelector(".vc-vol-fill");
+      if (fill) fill.style.width = Math.round(Math.max(0, Math.min(1, level)) * 100) + "%";
+    }
   });
 }
 
@@ -1623,11 +1635,24 @@ function markVoiceActive(channel, endTime) {
   row.classList.add("active");
   const prev = midiVoiceTimers.get(channel);
   if (prev) clearTimeout(prev);
+  if (endTime == null) {
+    midiVoiceTimers.delete(channel);
+    return;
+  }
   const delay = Math.max(0, (endTime - audio.ctx.currentTime) * 1000);
   midiVoiceTimers.set(channel, setTimeout(() => {
     row.classList.remove("active");
     midiVoiceTimers.delete(channel);
   }, delay));
+}
+
+function clearVoiceActive(channel) {
+  const row = midiVoiceRows.get(channel);
+  if (!row) return;
+  const prev = midiVoiceTimers.get(channel);
+  if (prev) clearTimeout(prev);
+  midiVoiceTimers.delete(channel);
+  row.classList.remove("active");
 }
 
 function updateVoiceConsoleVolume(channel, level) {
@@ -2066,7 +2091,25 @@ const midiInState = {
     sostenuto: new Set(),
     sustain: false,
     programByChannel: new Map(),
+    ccByChannel: new Map(),
+    sfByChannel: new Map(),
+    heldCountByChannel: new Map(),
 };
+
+function deviceHeldCount(channel) {
+    return midiInState.heldCountByChannel.get(channel) || 0;
+}
+function deviceHeldInc(channel) {
+    const n = deviceHeldCount(channel) + 1;
+    midiInState.heldCountByChannel.set(channel, n);
+    return n;
+}
+function deviceHeldDec(channel) {
+    const n = deviceHeldCount(channel) - 1;
+    if (n <= 0) midiInState.heldCountByChannel.delete(channel);
+    else midiInState.heldCountByChannel.set(channel, n);
+    return Math.max(0, n);
+}
 
 function sendMidiOutNoteOn(name) {
     const midi = noteNameToMidi(name);
@@ -2115,19 +2158,25 @@ function onDeviceNoteOn(midi, velocity, channel) {
         releaseNote(midiInState.held.get(midi), { fromMidi: true });
         stopDeviceSound(midi);
         midiInState.held.delete(midi);
+        deviceHeldDec(channel);
     }
     midiInState.held.set(midi, note.name);
-    const program = midiInState.programByChannel.has(channel)
-        ? midiInState.programByChannel.get(channel)
-        : 0;
-    playNoteViaProgram(note, velocity, program, midi);
+    deviceHeldInc(channel);
+    if (!midiInState.programByChannel.has(channel)) {
+        midiInState.programByChannel.set(channel, 0);
+        updateVoiceConsole();
+    }
+    const program = midiInState.programByChannel.get(channel);
+    playNoteViaProgram(note, velocity, program, midi, channel);
     holdNote(note.name, { fromMidi: true });
+    markVoiceActive(channel);
 }
 
 function onDeviceNoteOff(midi, channel) {
     const name = midiInState.held.get(midi);
     if (name == null) return;
     midiInState.held.delete(midi);
+    deviceHeldDec(channel);
     if (midiInState.sostenuto.has(midi)) return;
     if (midiInState.sustain) {
         midiInState.pedaled.add(midi); 
@@ -2135,9 +2184,10 @@ function onDeviceNoteOff(midi, channel) {
     }
     stopDeviceSound(midi);
     releaseNote(name, { fromMidi: true });
+    if (deviceHeldCount(channel) === 0) clearVoiceActive(channel);
 }
 
-async function playNoteViaProgram(note, velocity, program, midi) {
+async function playNoteViaProgram(note, velocity, program, midi, channel) {
     if (!midiInState.held.has(midi)) return;
     const vel = clampVelocity(velocity);
     const startOn = async (sf) => {
@@ -2147,11 +2197,15 @@ async function playNoteViaProgram(note, velocity, program, midi) {
             const stopFn = sf.start({
                 note: note.name,
                 time: audio.ctx.currentTime + 0.02,
-                duration: 30,
                 velocity: vel,
             });
             if (typeof stopFn !== "function") return false;
             midiInState.heldSound.set(midi, { program, stopFn });
+            if (channel != null && typeof sf.setVolume === "function") {
+                const st = midiInState.ccByChannel.get(channel) || { cc7: 1, cc11: 1 };
+                sf.setVolume(st.cc7 * st.cc11 * 100);
+                midiInState.sfByChannel.set(channel, sf);
+            }
             return true;
         } catch (_) {
             return false;
@@ -2177,6 +2231,19 @@ function stopDeviceSound(midi) {
 function onDeviceProgramChange(program, channel) {
     midiInState.programByChannel.set(channel, program);
     getSoundfontForProgram(program).catch((_) => {});
+    updateVoiceConsole();
+}
+
+function onDeviceControlChange(cc, value, channel) {
+    if (cc !== 7 && cc !== 11) return;
+    const st = midiInState.ccByChannel.get(channel) || { cc7: 1, cc11: 1 };
+    if (cc === 7) st.cc7 = value / 127;
+    else st.cc11 = value / 127;
+    midiInState.ccByChannel.set(channel, st);
+    const level = st.cc7 * st.cc11;
+    const sf = midiInState.sfByChannel.get(channel);
+    if (sf && typeof sf.setVolume === "function") sf.setVolume(level * 100);
+    updateVoiceConsoleVolume(channel, level);
 }
 
 
@@ -2310,6 +2377,7 @@ function releaseAllMidiInNotes() {
 midiDevice.onNoteOn = onDeviceNoteOn;
 midiDevice.onNoteOff = onDeviceNoteOff;
 midiDevice.onProgramChange = onDeviceProgramChange;
+midiDevice.onControlChange = onDeviceControlChange;
 midiDevice.onSustain = onDeviceSustain;
 midiDevice.onSostenuto = onDeviceSostenuto;
 midiDevice.onSoft = onDeviceSoft;
@@ -2373,26 +2441,29 @@ function syncMidiControls() {
 }
 
 function updateMidiDeviceUI() {
-    const connected = !!midiDevice.access;
-    const panelOpen = !midiPanelEl.hidden;
-    midiLinkBtn.classList.toggle("is-connected", connected);
+    const hasAccess = !!midiDevice.access;
+    const hasDevice = hasAccess && (midiDevice.inputs.length > 0 || midiDevice.outputs.length > 0);
+    midiLinkBtn.classList.toggle("is-connected", hasDevice);
     if (!midiDevice.supported) {
         midiLinkLabel.textContent = "MIDI 不可用";
         midiStatusEl.textContent = "当前浏览器不支持 Web MIDI";
         midiLinkBtn.title = "当前浏览器不支持 Web MIDI";
-    } else if (!connected) {
+    } else if (!hasAccess) {
         midiLinkLabel.textContent = "MIDI 设备";
         midiStatusEl.textContent = "未连接 · 点击按钮授权并连接";
+    } else if (!hasDevice) {
+        midiLinkLabel.textContent = "MIDI 设备";
+        midiStatusEl.textContent = "已授权 · 未检测到 MIDI 设备";
     } else {
         midiStatusEl.textContent = `已连接 · 输入 ${midiDevice.inputs.length} · 输出 ${midiDevice.outputs.length}`;
         midiLinkLabel.textContent = "已连接";
     }
-    midiInputSel.disabled = !connected;
-    midiOutputSel.disabled = !connected;
-    midiInToggle.disabled = !connected;
-    midiOutToggle.disabled = !connected;
+    midiInputSel.disabled = !hasAccess;
+    midiOutputSel.disabled = !hasAccess;
+    midiInToggle.disabled = !hasAccess;
+    midiOutToggle.disabled = !hasAccess;
     pedalBtns.forEach((btn) => {
-        btn.disabled = !connected || !midiDevice.output;
+        btn.disabled = !hasAccess || !midiDevice.output;
     });
 }
 
@@ -2548,12 +2619,22 @@ window.addEventListener("pointercancel", releasePointerPedals);
 })();
 
 function armMidiAutoConnect() {
+    if (!midiDevice.supported) return;
     let saved = null;
     try { saved = localStorage.getItem(MIDI_AUTOCONNECT_KEY); } catch (_) {}
-    if (saved !== "1" || !midiDevice.supported) return;
+    if (saved === "1") {
+        midiDevice.connect().then(() => {
+            applyMidiSetup();
+            renderMidiPorts();
+            syncMidiControls();
+            updateMidiDeviceUI();
+        }).catch(() => {});
+        return;
+    }
     const attempt = async () => {
         window.removeEventListener("click", attempt);
         window.removeEventListener("keydown", attempt);
+        if (midiDevice.access) return;
         try {
             await midiDevice.connect();
             applyMidiSetup();

@@ -307,9 +307,8 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px 10px;
-  width: fit-content;
-  max-width: calc(100% - 32px);
-  margin: 48px auto 0;
+  width: min(96vw, 1280px);
+  margin: 14px auto 0;
   padding: 10px 16px;
   background: linear-gradient(135deg, rgba(45, 96, 214, 0.16), rgba(45, 96, 214, 0.06));
   border: 1px solid rgba(80, 130, 245, 0.4);
@@ -552,6 +551,12 @@ body {
   justify-content: center;
   padding: 16px 18px 0px;
   gap: 22px;
+}
+
+body:has(#midi-voice-console:not([hidden])) .stage {
+  justify-content: flex-start;
+  padding-top: 14px;
+  gap: 14px;
 }
 
 .hint {
