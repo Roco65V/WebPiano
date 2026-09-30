@@ -1101,16 +1101,14 @@ rainbowModeEl.addEventListener("change", () => {
     try { localStorage.setItem(RAINBOW_KEY, on ? "1" : "0"); } catch (_) {}
 });
 
-// ---------- Keyboard instrument ----------
-// The top-bar 音色 dropdown changes the timbre of the on-screen piano
-// (manual keyboard + touch). The default "default" option uses the original
-// MP3 samples under samples/piano/. Any other option loads the matching
-// MusyngKite SoundFont on demand and plays the keys through it. MIDI file
-// playback deliberately uses a fixed piano SoundFont — the timbre of a
-// MIDI is determined by the file's program-change events, not by this
-// picker, so the selector and the MIDI player are decoupled.
+
 const keyboardInstrumentEl = document.getElementById("midi-instrument");
 const KEYBOARD_INSTRUMENT_KEY = "fnpiano.keyboardInstrument";
+
+const INSTRUMENT_CN = {};
+for (const opt of keyboardInstrumentEl.options) {
+  if (opt.value && opt.value !== "default") INSTRUMENT_CN[opt.value] = opt.textContent;
+}
 
 const keyboard = {
     currentInstrument: "default", // "default" = samples/piano/*.mp3
@@ -1240,6 +1238,9 @@ const midiBtn = document.getElementById("midi-btn");
 const midiFileInput = document.getElementById("midi-file");
 const midiReloadBtn = document.getElementById("midi-reload");
 const midiNameEl = document.getElementById("midi-name");
+const midiVoiceConsole = document.getElementById("midi-voice-console");
+const midiVoiceRows = new Map();  
+const midiVoiceTimers = new Map();  
 
 const MIDI_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 function midiToNoteName(midi) {
@@ -1281,6 +1282,9 @@ const midi = {
     channelPrograms: new Map(), 
     channelSf: new Map(),
     channelSfPromises: [], 
+    ccEvents: [],      
+    ccIndex: 0,
+    ccState: new Map(), 
     ctxStartTime: 0, // AudioContext time at the most recent play()
     pausedAt: 0, // seconds elapsed in the MIDI timeline at the most recent pause
     visualTimers: [], // setTimeout ids for visual on/off callbacks
@@ -1515,7 +1519,11 @@ function resetMidiPlaybackState() {
     midi.channelSfPromises = [];
     midi.pedalEvents = [];
     midi.pedalIndex = 0;
+    midi.ccEvents = [];
+    midi.ccIndex = 0;
+    midi.ccState = new Map();
     clearFilePedals();
+    updateVoiceConsole();
 }
 
 function trackControlChanges(track, cc) {
@@ -1572,6 +1580,63 @@ function applyPedalsToNotes(notes, pedalEvents) {
         note.releaseTime = release;
         note.playDuration = Math.max(release - note.time, note.duration, 0.01);
     }
+}
+
+function updateVoiceConsole() {
+  if (!midiVoiceConsole) return;
+  if (!midi.channelPrograms || midi.channelPrograms.size === 0) {
+    midiVoiceConsole.hidden = true;
+    midiVoiceRows.clear();
+    return;
+  }
+  midiVoiceConsole.hidden = false;
+  midiVoiceRows.clear();
+  const channels = [...midi.channelPrograms.keys()].sort((a, b) => a - b);
+  const rows = [];
+  const VC_COLORS = [
+    "#4f8cff", "#22b8a6", "#3ddc84", "#a3d33b",
+    "#ffcf33", "#ff9f1c", "#ff6b4a", "#ff5c8a",
+    "#c86bff", "#8b6bff", "#5ad0ff", "#39c5d6",
+    "#7bd13b", "#ffd24d", "#ff7a59", "#e06bd6"
+  ];
+  for (const ch of channels) {
+    const p = midi.channelPrograms.get(ch);
+    const inst = (PROGRAM_TO_SOUNDFONT[p]) || "acoustic_grand_piano";
+    const cn = INSTRUMENT_CN[inst] || inst;
+    const color = VC_COLORS[ch % VC_COLORS.length];
+    rows.push(
+      `<span class="vc-row" data-ch="${ch}" style="--vc-color:${color}">` +
+      `<span class="vc-ch">通道 ${ch + 1}</span>` +
+      `<span class="vc-name">${cn}</span>` +
+      `<span class="vc-vol"><span class="vc-vol-fill" style="width:100%"></span></span></span>`
+    );
+  }
+  midiVoiceConsole.innerHTML = rows.join("");
+  midiVoiceConsole.querySelectorAll(".vc-row").forEach((el) => {
+    midiVoiceRows.set(Number(el.dataset.ch), el);
+  });
+}
+
+function markVoiceActive(channel, endTime) {
+  const row = midiVoiceRows.get(channel);
+  if (!row) return;
+  row.classList.add("active");
+  const prev = midiVoiceTimers.get(channel);
+  if (prev) clearTimeout(prev);
+  const delay = Math.max(0, (endTime - audio.ctx.currentTime) * 1000);
+  midiVoiceTimers.set(channel, setTimeout(() => {
+    row.classList.remove("active");
+    midiVoiceTimers.delete(channel);
+  }, delay));
+}
+
+function updateVoiceConsoleVolume(channel, level) {
+  const row = midiVoiceRows.get(channel);
+  if (!row) return;
+  const fill = row.querySelector(".vc-vol-fill");
+  if (fill) {
+    fill.style.width = Math.round(Math.max(0, Math.min(1, level)) * 100) + "%";
+  }
 }
 
 async function loadMidiFile(file) {
@@ -1639,11 +1704,25 @@ async function loadMidiFile(file) {
         }
         pedalEvents.sort((a, b) => a.time - b.time);
 
+        const ccEvents = [];
+        for (const track of midiData.tracks) {
+            const ch = track.channel == null ? 0 : track.channel;
+            if (ch === 9) continue;
+            for (const cc of [7, 11]) {
+                for (const ev of trackControlChanges(track, cc)) {
+                    ccEvents.push({ time: ev.time, channel: ch, cc, value: ev.value || 0 });
+                }
+            }
+        }
+        ccEvents.sort((a, b) => a.time - b.time);
+
         notes.sort((a, b) => a.time - b.time);
         applyPedalsToNotes(notes, pedalEvents);
         midi.notes = notes;
         midi.pedalEvents = pedalEvents;
+        midi.ccEvents = ccEvents;
         midi.channelPrograms = channelPrograms;
+        updateVoiceConsole();
         preloadMidiChannelSoundfonts();
         midi.totalDuration = midiData.duration || 0;
         for (const note of notes) {
@@ -1655,6 +1734,7 @@ async function loadMidiFile(file) {
         midi.fileName = null;
         midi.notes = [];
         midi.pedalEvents = [];
+        midi.ccEvents = [];
         midi.totalDuration = 0;
         midi.status = "idle";
         alert("无法加载 MIDI 文件：" + (err && err.message ? err.message : err));
@@ -1684,6 +1764,14 @@ function scheduleFrom(elapsed) {
     midi.ctxStartTime = audio.ctx.currentTime;
     midi.scheduleIndex = 0;
     midi.pedalIndex = 0;
+    midi.ccIndex = 0;
+    midi.ccState = new Map();
+    for (const sf of midi.channelSf.values()) {
+        if (typeof sf.setVolume === "function") sf.setVolume(100);
+    }
+    for (const [ch] of midiVoiceRows) {
+        updateVoiceConsoleVolume(ch, 1);
+    }
     midi.schedulerTimer = null;
     midi.highlightIndex = 0;
     midi.highlightRaf = null;
@@ -1739,6 +1827,7 @@ function scheduleFrom(elapsed) {
                     if (typeof stopFn === "function") {
                         midi.stopFns.push(stopFn);
                         addMidiVoice(stopFn, audioTime + note.playDuration);
+                        markVoiceActive(note.channel, audioTime + note.playDuration);
                     }
                 } catch (err) {}
                 scheduleMidiOutNote(note, audioTime, vel);
@@ -1756,6 +1845,29 @@ function scheduleFrom(elapsed) {
                 midi.ctxStartTime + (ev.time - elapsed)
             );
             midi.pedalIndex++;
+        }
+
+        while (midi.ccIndex < midi.ccEvents.length) {
+            const ev = midi.ccEvents[midi.ccIndex];
+            if (ev.time > scheduleUntil) break;
+            const st = midi.ccState.get(ev.channel) || { cc7: 1, cc11: 1 };
+            if (ev.cc === 7) st.cc7 = ev.value;
+            else if (ev.cc === 11) st.cc11 = ev.value;
+            midi.ccState.set(ev.channel, st);
+            const ch = ev.channel, cc7 = st.cc7, cc11 = st.cc11;
+            const audioTime = midi.ctxStartTime + (ev.time - elapsed);
+            const delayMs = (audioTime - audio.ctx.currentTime) * 1000;
+            const apply = () => {
+                const sf = midi.channelSf.get(ch);
+                if (sf && typeof sf.setVolume === "function") {
+                    sf.setVolume(cc7 * cc11 * 100);
+                }
+                updateVoiceConsoleVolume(ch, cc7 * cc11);
+            };
+            if (delayMs <= 0) apply();
+            else setTimeout(apply, delayMs);
+            scheduleMidiOutControlChange(ev.cc, ev.value * 127, audioTime);
+            midi.ccIndex++;
         }
 
         if (midi.scheduleIndex >= midi.notes.length) {
